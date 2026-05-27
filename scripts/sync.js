@@ -3,7 +3,7 @@
 /**
  * AI Memory Sync - 通用 AI 助手记忆同步工具（Node.js 版）
  * 支持任意 AI 助手（WorkBuddy/QClaw/Claude/ChatGPT 等）之间的记忆同步
- * v3.1.8 - 身份缓存+自动更新: 平台目录.ai-identity(不互相覆盖),启动自动git pull,技能失败不设exit 1
+ * v3.1.9 - 修复push返回值、cwd未恢复、平台目录判断
  */
 
 const fs = require('fs');
@@ -1336,6 +1336,9 @@ async function cmdSyncAll() {
     log('═══ 第二步：技能库同步 ═══');
     results.skills = await cmdSyncSkills();
 
+    // v3.1.9: 恢复原始 cwd（cmdSyncSkills 会 chdir 到技能仓库目录）
+    process.chdir(workspaceDir);
+
     // 汇总结果
     const memOk = results.memory && !process.exitCode;
     const skiOk = results.skills && results.skills.ok;
@@ -1665,20 +1668,22 @@ async function cmdPush() {
         runGit(['push', 'origin', memBranch], { timeout: 120000 });
         log('  ✅ 推送成功！');
         // v3.1.8: 写入身份缓存到平台目录（如 ~/.qclaw/.ai-identity），不写共享workspace
+        // v3.1.9: 修复平台目录判断（应检查相对路径首段是否以.开头，而非完整绝对路径）
         try {
           const aiName = (loadConfig().ai_name || '').toLowerCase();
           if (aiName) {
             const cwd2 = process.cwd();
             const rel2 = path.relative(os.homedir(), cwd2);
-            const platformDir = path.join(os.homedir(), rel2.split(path.sep)[0]);
-            if (platformDir && platformDir.startsWith('.')) {
+            const firstSeg = rel2.split(path.sep)[0];
+            if (firstSeg && firstSeg.startsWith('.')) {
+              const platformDir = path.join(os.homedir(), firstSeg);
               fs.writeFileSync(path.join(platformDir, '.ai-identity'), aiName, 'utf-8');
             }
           }
         } catch (_) {}
         log('');
         log('═══ push 完成（' + agentDir + '）═══');
-        return;
+        return true;
       } catch (e) {
         const errMsg = (e.stderr || e.message || '').toString();
         if (errMsg.includes('non-fast-forward') && attempt < 2) {
