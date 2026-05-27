@@ -1,4 +1,4 @@
-﻿﻿﻿﻿#!/usr/bin/env node
+#!/usr/bin/env node
 // -*- coding: utf-8 -*-
 /**
  * AI Memory Sync - 通用 AI 助手记忆同步工具（Node.js 版）
