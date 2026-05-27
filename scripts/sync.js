@@ -28,7 +28,7 @@ function getConfigDir() {
   if (_configDirOverride) return _configDirOverride;
 
   // 2. 尝试从已有配置文件读取 ai_name（直接读固定路径候选列表，不调 getConfigFile）
-  //    v3.1.7: 当存在多个配置时，优先匹配 workspace_dir 包含 cwd 的配置
+  //    v3.1.7: 多配置共存时按精确度分级选择
   const home = os.homedir();
   const cwd = process.cwd();
   const candidates = fs.readdirSync(home)
@@ -36,21 +36,22 @@ function getConfigDir() {
     .map(d => path.join(home, d, 'sync-config.json'))
     .filter(f => fs.existsSync(f));
 
-  // 2a. 优先：找 workspace_dir 包含 cwd 的配置（说明当前在此工作区内运行）
+  // 2a. 最精确：cwd 路径包含 ai_name（如 .qclaw/ 包含 "qclaw"，.toclaw/ 包含 "toclaw"）
+  //     多AI共享同一workspace时，只有正确的ai_name会被cwd路径匹配到
   for (const cf of candidates) {
     try {
       const cfg = JSON.parse(fs.readFileSync(cf, 'utf-8'));
-      if (cfg && cfg.ai_name && cfg.workspace_dir && cwd.toLowerCase().startsWith(cfg.workspace_dir.toLowerCase())) {
+      if (cfg && cfg.ai_name && cwd.toLowerCase().includes(cfg.ai_name.toLowerCase())) {
         return path.join(home, '.ai-memory-sync-' + cfg.ai_name.toLowerCase());
       }
     } catch (_) {}
   }
 
-  // 2b. 次选：cwd 路径包含 ai_name 的配置
+  // 2b. 次选：workspace_dir 包含 cwd（多个AI共享workspace时可能匹配多个，优先级低）
   for (const cf of candidates) {
     try {
       const cfg = JSON.parse(fs.readFileSync(cf, 'utf-8'));
-      if (cfg && cfg.ai_name && cwd.toLowerCase().includes(cfg.ai_name.toLowerCase())) {
+      if (cfg && cfg.ai_name && cfg.workspace_dir && cwd.toLowerCase().startsWith(cfg.workspace_dir.toLowerCase())) {
         return path.join(home, '.ai-memory-sync-' + cfg.ai_name.toLowerCase());
       }
     } catch (_) {}
