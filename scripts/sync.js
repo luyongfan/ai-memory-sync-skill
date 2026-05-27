@@ -9,7 +9,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execSync } = require('child_process');
+const { execSync, spawn } = require('child_process');
 
 // ============ 配置路径（v3.1: 每人独立目录，避免互相覆盖）============
 /**
@@ -2156,6 +2156,35 @@ function cmdSkillScan() {
 
   return skills;
 }
+// ============ v3.1.8: 启动时自动更新 ============
+const SKILL_DIR = path.resolve(__dirname, '..');
+
+function selfUpdate() {
+  if (process.env.AI_MEMORY_SYNC_SKIP_UPDATE) return; // 环境变量跳过更新
+  try {
+    execSync('git fetch origin main', { cwd: SKILL_DIR, timeout: 15000, stdio: 'pipe' });
+    const diff = execSync('git log HEAD..origin/main --oneline', { cwd: SKILL_DIR, encoding: 'utf-8', timeout: 5000 });
+    if (diff.trim()) {
+      const count = diff.trim().split('\n').length;
+      console.log('📦 发现新版本 (' + count + ' 个提交)，自动更新中...');
+      console.log(diff.trim().split('\n').map(l => '  ' + l).join('\n'));
+      execSync('git pull origin main', { cwd: SKILL_DIR, stdio: 'inherit', timeout: 30000 });
+      console.log('✅ 已更新！正在用新版本重新执行...\n');
+      const child = spawn(process.execPath, process.argv.slice(1), { stdio: 'inherit', cwd: process.cwd(), env: { ...process.env, AI_MEMORY_SYNC_SKIP_UPDATE: '1' } });
+      child.on('exit', (code) => process.exit(code));
+      process.exit(0);
+    }
+  } catch (e) {
+    // 网络问题或非git目录，静默忽略
+  }
+}
+
+// 启动时自动检查更新（init/sync/soul 等核心命令）
+const _pendingCommand = process.argv[2];
+if (['init', 'sync', 'soul', 'status', 'check', 'push', 'pull', 'auto'].includes(_pendingCommand)) {
+  selfUpdate();
+}
+
 // ============ 主入口 ============
 
 const command = process.argv[2];
