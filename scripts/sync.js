@@ -3,7 +3,7 @@
 /**
  * AI Memory Sync - 通用 AI 助手记忆同步工具（Node.js 版）
  * 支持任意 AI 助手（WorkBuddy/QClaw/Claude/ChatGPT 等）之间的记忆同步
- * v3.1.5 - WorkBuddy 修复: doInit先创建配置目录(首次init时目录不存在)
+ * v3.1.6 - QClaw修复: memory_path从memory/MEMORY.md改为MEMORY.md(与实际文件位置一致)
  */
 
 const fs = require('fs');
@@ -911,7 +911,7 @@ function detectLocalPaths(workspaceDir, platform) {
       break;
     }
     case 'qclaw': {
-      result.memory_path = 'memory/MEMORY.md';
+      result.memory_path = 'MEMORY.md';
       result.daily_path = 'memory/';
       result.soul_files = ['MEMORY.md'];
       if (fs.existsSync(path.join(workspaceDir, 'IDENTITY.md'))) result.identity_file = 'IDENTITY.md';
