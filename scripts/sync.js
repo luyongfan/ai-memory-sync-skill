@@ -3,7 +3,7 @@
 /**
  * AI Memory Sync - 通用 AI 助手记忆同步工具（Node.js 版）
  * 支持任意 AI 助手（WorkBuddy/QClaw/Claude/ChatGPT 等）之间的记忆同步
- * v3.1.8 - 身份缓存: sync/init写入workspace/.ai-identity，getConfigDir优先读取，彻底解决多AI身份混淆
+ * v3.1.8 - 身份缓存+自动更新: 平台目录.ai-identity(不互相覆盖),启动自动git pull,技能失败不设exit 1
  */
 
 const fs = require('fs');
@@ -30,35 +30,33 @@ function getConfigDir() {
   const home = os.homedir();
   const cwd = process.cwd();
 
-  // 1.5. v3.1.8: 从 workspace 缓存身份文件读取（最可靠，不受 cwd 影响）
-  //     在 sync 和 init 时写入 workspace_dir/.ai-identity
-  const identityCachePaths = [
-    path.join(cwd, '.ai-identity'),           // 当前 cwd 下
-  ];
-  // 也检查已知 workspace 路径
-  const candidates = fs.readdirSync(home)
-    .filter(d => d.startsWith('.ai-memory-sync-') && d !== '.ai-memory-sync-skill')
-    .map(d => path.join(home, d, 'sync-config.json'))
-    .filter(f => fs.existsSync(f));
-  for (const cf of candidates) {
+  // 1.5. v3.1.8: 从平台目录的身份缓存读取（不受 cwd 深度影响）
+  //     sync/init 写入各自平台目录（如 ~/.qclaw/.ai-identity），不会互相覆盖
+  //     每个平台目录只属于一个AI，所以缓存是唯一的
+  const rel = path.relative(home, cwd);
+  const firstPart = rel.split(path.sep)[0];
+  if (firstPart && firstPart.startsWith('.')) {
+    const platformHome = path.join(home, firstPart);
     try {
-      const cfg = JSON.parse(fs.readFileSync(cf, 'utf-8'));
-      if (cfg && cfg.workspace_dir) {
-        identityCachePaths.push(path.join(cfg.workspace_dir, '.ai-identity'));
-      }
-    } catch (_) {}
-  }
-  for (const ip of identityCachePaths) {
-    try {
-      const identity = fs.readFileSync(ip, 'utf-8').trim();
-      if (identity) {
-        return path.join(home, '.ai-memory-sync-' + identity.toLowerCase());
+      const identityFile = path.join(platformHome, '.ai-identity');
+      if (fs.existsSync(identityFile)) {
+        const identity = fs.readFileSync(identityFile, 'utf-8').trim();
+        if (identity) {
+          const candidateDir = path.join(home, '.ai-memory-sync-' + identity.toLowerCase());
+          if (fs.existsSync(path.join(candidateDir, 'sync-config.json'))) {
+            return candidateDir;
+          }
+        }
       }
     } catch (_) {}
   }
 
   // 2. 尝试从已有配置文件读取 ai_name（直接读固定路径候选列表，不调 getConfigFile）
   //    v3.1.7: 多配置共存时按精确度分级选择
+  const candidates = fs.readdirSync(home)
+    .filter(d => d.startsWith('.ai-memory-sync-') && d !== '.ai-memory-sync-skill')
+    .map(d => path.join(home, d, 'sync-config.json'))
+    .filter(f => fs.existsSync(f));
 
   // 2a. 最精确：cwd 路径包含 ai_name（如 .qclaw/ 包含 "qclaw"，.toclaw/ 包含 "toclaw"）
   //     多AI共享同一workspace时，只有正确的ai_name会被cwd路径匹配到
@@ -887,9 +885,14 @@ function doInit(repoUrl, token, password, aiName, workspaceDir) {
 
   log('');
   log('✅ 初始化完成！已生成 profile.json（三层结构）');
-  // v3.1.8: 写入身份缓存
+  // v3.1.8: 写入身份缓存到平台目录
   try {
-    fs.writeFileSync(path.join(workspaceDir, '.ai-identity'), aiName.toLowerCase(), 'utf-8');
+    const cwdInit = process.cwd();
+    const relInit = path.relative(os.homedir(), cwdInit);
+    const platformDirInit = path.join(os.homedir(), relInit.split(path.sep)[0]);
+    if (platformDirInit && platformDirInit.includes('.')) {
+      fs.writeFileSync(path.join(platformDirInit, '.ai-identity'), aiName.toLowerCase(), 'utf-8');
+    }
   } catch (_) {}
   log('');
   log('📄 下一步操作：');
@@ -1342,8 +1345,9 @@ async function cmdSyncAll() {
       log('═══ 全量同步完成！═══');
     } else {
       log('═══ ⚠️ 部分同步失败 ═══', 'WARN');
-      if (!skiOk) log('  ❌ 技能库: ' + (results.skills && results.skills.error || '失败'), 'ERROR');
-      process.exitCode = 1;
+      if (!skiOk) log('  ⚠️ 技能库: ' + (results.skills && results.skills.error || '失败') + '（不影响记忆同步）', 'WARN');
+      // v3.1.8: 只有记忆同步失败才设退出码1，技能库失败不影响核心功能
+      if (!memOk) process.exitCode = 1;
     }
     cmdSoul();
   } finally {
@@ -1660,11 +1664,16 @@ async function cmdPush() {
       try {
         runGit(['push', 'origin', memBranch], { timeout: 120000 });
         log('  ✅ 推送成功！');
-        // v3.1.8: 写入身份缓存到 workspace，确保后续 soul/sync 能正确识别
+        // v3.1.8: 写入身份缓存到平台目录（如 ~/.qclaw/.ai-identity），不写共享workspace
         try {
           const aiName = (loadConfig().ai_name || '').toLowerCase();
           if (aiName) {
-            fs.writeFileSync(path.join(workspaceDir, '.ai-identity'), aiName, 'utf-8');
+            const cwd2 = process.cwd();
+            const rel2 = path.relative(os.homedir(), cwd2);
+            const platformDir = path.join(os.homedir(), rel2.split(path.sep)[0]);
+            if (platformDir && platformDir.startsWith('.')) {
+              fs.writeFileSync(path.join(platformDir, '.ai-identity'), aiName, 'utf-8');
+            }
           }
         } catch (_) {}
         log('');
