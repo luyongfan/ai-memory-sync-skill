@@ -3,7 +3,7 @@
 /**
  * AI Memory Sync - 通用 AI 助手记忆同步工具（Node.js 版）
  * 支持任意 AI 助手（WorkBuddy/QClaw/Claude/ChatGPT 等）之间的记忆同步
- * v3.1.9 - 修复push返回值、cwd未恢复、平台目录判断
+ * v3.1.10 - 修复"无新变更"路径返回值+init时写入身份缓存
  */
 
 const fs = require('fs');
@@ -885,12 +885,13 @@ function doInit(repoUrl, token, password, aiName, workspaceDir) {
 
   log('');
   log('✅ 初始化完成！已生成 profile.json（三层结构）');
-  // v3.1.8: 写入身份缓存到平台目录
+  // v3.1.10: 写入身份缓存到平台目录（应检查相对路径首段是否以.开头）
   try {
     const cwdInit = process.cwd();
     const relInit = path.relative(os.homedir(), cwdInit);
-    const platformDirInit = path.join(os.homedir(), relInit.split(path.sep)[0]);
-    if (platformDirInit && platformDirInit.includes('.')) {
+    const firstSegInit = relInit.split(path.sep)[0];
+    if (firstSegInit && firstSegInit.startsWith('.')) {
+      const platformDirInit = path.join(os.homedir(), firstSegInit);
       fs.writeFileSync(path.join(platformDirInit, '.ai-identity'), aiName.toLowerCase(), 'utf-8');
     }
   } catch (_) {}
@@ -1641,7 +1642,7 @@ async function cmdPush() {
     } else {
       log('  ℹ️ 无新变更需要提交');
       removeLock();
-      return;
+      return true; // v3.1.10: 无变更也算成功
     }
 
     // Step 6: 拉取远程更新（rebase），处理冲突
