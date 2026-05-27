@@ -1337,7 +1337,7 @@ async function cmdSyncAll() {
     results.skills = await cmdSyncSkills();
 
     // v3.1.9: 恢复原始 cwd（cmdSyncSkills 会 chdir 到技能仓库目录）
-    process.chdir(workspaceDir);
+    process.chdir(config.workspace_dir || process.cwd());
 
     // 汇总结果
     const memOk = results.memory && !process.exitCode;
