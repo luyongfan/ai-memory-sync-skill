@@ -692,10 +692,10 @@ function ensureGitignore(repoDir, content) {
 function doInit(repoUrl, token, password, aiName, workspaceDir) {
   // 智能修正 workspaceDir：如果 cwd 是 skill 仓库、平台工作目录或其他无关目录，
   // 根据 aiName 自动查找正确的 workspace 目录
-  // v3.1.4: 不仅检查路径是否包含 aiName，还要验证路径是否是有效的 git 仓库（有 .git 或 agents/）
+  // v3.1.4: 不仅检查路径是否包含 aiName，还要验证路径是否是有效的 git 仓库
+  // 必须有 .git 目录才认为是仓库（光有 agents/ 不够，可能是上次 init 残留）
   const pathHasAgentName = detectAgentNameFromPathStrict(workspaceDir).includes(aiName.toLowerCase());
-  const pathIsValidRepo = fs.existsSync(path.join(workspaceDir, '.git')) ||
-                           fs.existsSync(path.join(workspaceDir, 'agents'));
+  const pathIsValidRepo = fs.existsSync(path.join(workspaceDir, '.git'));
   if (!pathHasAgentName || !pathIsValidRepo) {
     const knownWorkspaces = [
       // WorkBuddy 的常见 workspace 路径
