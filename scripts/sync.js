@@ -3,7 +3,7 @@
 /**
  * AI Memory Sync - 通用 AI 助手记忆同步工具（Node.js 版）
  * 支持任意 AI 助手（WorkBuddy/QClaw/Claude/ChatGPT 等）之间的记忆同步
- * v3.1.3 - WorkBuddy 修复: detectLocalPaths的workbuddy分支使用绝对路径(解耦仓库目录与数据目录)
+ * v3.1.4 - WorkBuddy 修复: doInit智能修正增加仓库有效性验证(防止平台工作目录被误认为仓库)
  */
 
 const fs = require('fs');
@@ -690,9 +690,13 @@ function ensureGitignore(repoDir, content) {
   }
 }
 function doInit(repoUrl, token, password, aiName, workspaceDir) {
-  // 智能修正 workspaceDir：如果 cwd 是 skill 仓库或其他无关目录，
+  // 智能修正 workspaceDir：如果 cwd 是 skill 仓库、平台工作目录或其他无关目录，
   // 根据 aiName 自动查找正确的 workspace 目录
-  if (!detectAgentNameFromPathStrict(workspaceDir).includes(aiName.toLowerCase())) {
+  // v3.1.4: 不仅检查路径是否包含 aiName，还要验证路径是否是有效的 git 仓库（有 .git 或 agents/）
+  const pathHasAgentName = detectAgentNameFromPathStrict(workspaceDir).includes(aiName.toLowerCase());
+  const pathIsValidRepo = fs.existsSync(path.join(workspaceDir, '.git')) ||
+                           fs.existsSync(path.join(workspaceDir, 'agents'));
+  if (!pathHasAgentName || !pathIsValidRepo) {
     const knownWorkspaces = [
       // WorkBuddy 的常见 workspace 路径
       path.join(os.homedir(), '.workbuddy', 'workspace'),
