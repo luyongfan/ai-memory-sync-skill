@@ -713,6 +713,9 @@ function doInit(repoUrl, token, password, aiName, workspaceDir) {
     }
   }
 
+  // 确保配置目录存在
+  fs.mkdirSync(getConfigDir(), { recursive: true });
+
   // 保存 token 到文件（不明文存入配置）
   fs.writeFileSync(getTokenFile(), token, 'utf-8');
   try { fs.chmodSync(getTokenFile(), 0o600); } catch (_) {}
