@@ -3,7 +3,7 @@
 /**
  * AI Memory Sync - 通用 AI 助手记忆同步工具（Node.js 版）
  * 支持任意 AI 助手（WorkBuddy/QClaw/Claude/ChatGPT 等）之间的记忆同步
- * v3.1.4 - WorkBuddy 修复: doInit智能修正增加仓库有效性验证(防止平台工作目录被误认为仓库)
+ * v3.1.5 - WorkBuddy 修复: doInit先创建配置目录(首次init时目录不存在)
  */
 
 const fs = require('fs');
@@ -713,8 +713,9 @@ function doInit(repoUrl, token, password, aiName, workspaceDir) {
     }
   }
 
-  // 确保配置目录存在
-  fs.mkdirSync(getConfigDir(), { recursive: true });
+  // 确保配置目录存在（首次 init 时目录可能还不存在）
+  const configDir = getConfigDir();
+  fs.mkdirSync(configDir, { recursive: true });
 
   // 保存 token 到文件（不明文存入配置）
   fs.writeFileSync(getTokenFile(), token, 'utf-8');
