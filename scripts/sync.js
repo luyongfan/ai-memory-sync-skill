@@ -1,9 +1,9 @@
-#!/usr/bin/env node
+﻿﻿﻿﻿#!/usr/bin/env node
 // -*- coding: utf-8 -*-
 /**
  * AI Memory Sync - 通用 AI 助手记忆同步工具（Node.js 版）
  * 支持任意 AI 助手（WorkBuddy/QClaw/Claude/ChatGPT 等）之间的记忆同步
- * v3.0.0 - 主从架构改造：push 目录隔离、pull 反向拷贝、profile.json 三层、soul 家族视图、migrate v3
+ * v3.1.1 - 修复: getConfigDir无限递归 + detectAgentName正确读IDENTITY.md：push 目录隔离、pull 反向拷贝、profile.json 三层、soul 家族视图、migrate v3
  */
 
 const fs = require('fs');
@@ -18,30 +18,48 @@ const { execSync } = require('child_process');
  * 自动处理从旧共享目录 (~/.ai-memory-sync/) 的迁移
  */
 function getConfigDir() {
-  // 从 workspace 推断 ai_name（如果配置还没加载）
-  const ws = process.cwd();
+  // 优先从已加载配置读取 ai_name（避免循环依赖）
   const config = loadConfigRaw();
-  const aiName = config.ai_name || detectAgentNameFromPath(ws);
-  return path.join(os.homedir(), '.ai-memory-sync-' + aiName.toLowerCase());
-}
-
-/** 从 workspace 路径猜测 ai_name（用于 init 之前） */
-function detectAgentNameFromPath(ws) {
-  if (ws.includes('.qclaw')) return 'qclaw';
-  if (ws.includes('WorkBuddy') || ws.includes('.workbuddy')) return 'workbuddy';
-  if (ws.includes('.openclaw')) return 'openclaw';
-  // 默认从 IDENTITY.md 读取
+  if (config && config.ai_name) {
+    return path.join(os.homedir(), '.ai-memory-sync-' + config.ai_name.toLowerCase());
+  }
+  // 配置不存在或 init 过程中 ai_name 未写入时，从 workspace_dir 或 cwd 推断
+  const ws = (config && config.workspace_dir) || process.cwd();
+  return path.join(os.homedir(), '.ai-memory-sync-' + detectAgentNameFromPath(ws).toLowerCase());
+}function detectAgentNameFromPath(ws) {
+  // 最高优先级：从 IDENTITY.md 读取真实名字
   try {
     const idPath = path.join(ws, 'IDENTITY.md');
     if (fs.existsSync(idPath)) {
-      const m = fs.readFileSync(idPath, 'utf8').match(/Name:\s*(\S+)/);
-      if (m) return m[1].toLowerCase();
+      const m = fs.readFileSync(idPath, 'utf8').match(/^-\s*[Nn]ame:\s*(.+)$/m);
+      if (m) return m[1].trim();
     }
   } catch (_) {}
+  // 次优先级：从路径特征推断（WorkBuddy 和 QClaw 的目录名不同）
+  if (ws.includes('WorkBuddy') || ws.includes('.workbuddy')) return 'workbuddy';
+  if (ws.includes('.qclaw') || ws.includes('QClaw')) return 'qclaw';
+  if (ws.includes('.openclaw')) return 'openclaw';
+  if (ws.includes('.claude')) return 'claude';
   return 'unknown';
 }
 
-/** 获取配置文件路径（兼容老代码写法） */
+/** 从 IDENTITY.md 读取真实名字，优先级高于路径推断（用于 doInit 身份解析） */
+function detectAgentName(workspaceDir) {
+  const candidates = [
+    path.join(workspaceDir, 'IDENTITY.md'),
+    path.join(workspaceDir, '.openclaw', 'IDENTITY.md'),
+    path.join(workspaceDir, '.qclaw', 'IDENTITY.md'),
+    path.join(workspaceDir, '.workbuddy', 'IDENTITY.md'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) {
+      const content = fs.readFileSync(p, 'utf-8');
+      const m = content.match(/^-\s*[Nn]ame:\s*(.+)$/m);
+      if (m) return m[1].trim();
+    }
+  }
+  return null;
+}
 function getConfigFile() { return path.join(getConfigDir(), 'sync-config.json'); }
 function getLockFile()   { return path.join(getConfigDir(), 'sync.lock'); }
 function getTokenFile()  { return path.join(getConfigDir(), '.token'); }
