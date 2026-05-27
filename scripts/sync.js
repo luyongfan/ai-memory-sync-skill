@@ -3,7 +3,7 @@
 /**
  * AI Memory Sync - 通用 AI 助手记忆同步工具（Node.js 版）
  * 支持任意 AI 助手（WorkBuddy/QClaw/Claude/ChatGPT 等）之间的记忆同步
- * v3.1.6 - QClaw修复: memory_path从memory/MEMORY.md改为MEMORY.md(与实际文件位置一致)
+ * v3.1.7 - 多配置选择修复: 多个.ai-memory-sync-*时优先匹配workspace_dir包含cwd的配置
  */
 
 const fs = require('fs');
@@ -28,12 +28,35 @@ function getConfigDir() {
   if (_configDirOverride) return _configDirOverride;
 
   // 2. 尝试从已有配置文件读取 ai_name（直接读固定路径候选列表，不调 getConfigFile）
+  //    v3.1.7: 当存在多个配置时，优先匹配 workspace_dir 包含 cwd 的配置
   const home = os.homedir();
+  const cwd = process.cwd();
   const candidates = fs.readdirSync(home)
     .filter(d => d.startsWith('.ai-memory-sync-') && d !== '.ai-memory-sync-skill')
     .map(d => path.join(home, d, 'sync-config.json'))
     .filter(f => fs.existsSync(f));
 
+  // 2a. 优先：找 workspace_dir 包含 cwd 的配置（说明当前在此工作区内运行）
+  for (const cf of candidates) {
+    try {
+      const cfg = JSON.parse(fs.readFileSync(cf, 'utf-8'));
+      if (cfg && cfg.ai_name && cfg.workspace_dir && cwd.toLowerCase().startsWith(cfg.workspace_dir.toLowerCase())) {
+        return path.join(home, '.ai-memory-sync-' + cfg.ai_name.toLowerCase());
+      }
+    } catch (_) {}
+  }
+
+  // 2b. 次选：cwd 路径包含 ai_name 的配置
+  for (const cf of candidates) {
+    try {
+      const cfg = JSON.parse(fs.readFileSync(cf, 'utf-8'));
+      if (cfg && cfg.ai_name && cwd.toLowerCase().includes(cfg.ai_name.toLowerCase())) {
+        return path.join(home, '.ai-memory-sync-' + cfg.ai_name.toLowerCase());
+      }
+    } catch (_) {}
+  }
+
+  // 2c. 兜底：用第一个找到的配置（只有一个配置时不会出错）
   for (const cf of candidates) {
     try {
       const cfg = JSON.parse(fs.readFileSync(cf, 'utf-8'));
