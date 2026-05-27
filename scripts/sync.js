@@ -3,7 +3,7 @@
 /**
  * AI Memory Sync - 通用 AI 助手记忆同步工具（Node.js 版）
  * 支持任意 AI 助手（WorkBuddy/QClaw/Claude/ChatGPT 等）之间的记忆同步
- * v3.1.1 - 修复: getConfigDir无限递归 + detectAgentName正确读IDENTITY.md：push 目录隔离、pull 反向拷贝、profile.json 三层、soul 家族视图、migrate v3
+ * v3.1.3 - WorkBuddy 修复: detectLocalPaths的workbuddy分支使用绝对路径(解耦仓库目录与数据目录)
  */
 
 const fs = require('fs');
@@ -17,25 +17,49 @@ const { execSync } = require('child_process');
  * 规则: ~/.ai-memory-sync-{ai_name}/
  * 自动处理从旧共享目录 (~/.ai-memory-sync/) 的迁移
  */
+// 防止循环递归的标志位（首次 init 时 config 不存在，需要阻断 getConfigDir → loadConfigRaw 循环）
+let _configDirOverride = null;
+
+/** 设置配置目录覆盖（由 cmdInit 在识别身份后调用，避免循环依赖） */
+function setConfigDirOverride(dir) { _configDirOverride = dir; }
+
 function getConfigDir() {
-  // 优先从已加载配置读取 ai_name（避免循环依赖）
-  const config = loadConfigRaw();
-  if (config && config.ai_name) {
-    return path.join(os.homedir(), '.ai-memory-sync-' + config.ai_name.toLowerCase());
+  // 1. 优先使用覆盖值（init 过程中由 cmdInit 设置，阻断循环）
+  if (_configDirOverride) return _configDirOverride;
+
+  // 2. 尝试从已有配置文件读取 ai_name（直接读固定路径候选列表，不调 getConfigFile）
+  const home = os.homedir();
+  const candidates = fs.readdirSync(home)
+    .filter(d => d.startsWith('.ai-memory-sync-') && d !== '.ai-memory-sync-skill')
+    .map(d => path.join(home, d, 'sync-config.json'))
+    .filter(f => fs.existsSync(f));
+
+  for (const cf of candidates) {
+    try {
+      const cfg = JSON.parse(fs.readFileSync(cf, 'utf-8'));
+      if (cfg && cfg.ai_name) {
+        return path.join(home, '.ai-memory-sync-' + cfg.ai_name.toLowerCase());
+      }
+    } catch (_) {}
   }
-  // 配置不存在或 init 过程中 ai_name 未写入时，从 workspace_dir 或 cwd 推断
-  const ws = (config && config.workspace_dir) || process.cwd();
-  return path.join(os.homedir(), '.ai-memory-sync-' + detectAgentNameFromPath(ws).toLowerCase());
-}function detectAgentNameFromPath(ws) {
-  // 最高优先级：从 IDENTITY.md 读取真实名字
-  try {
-    const idPath = path.join(ws, 'IDENTITY.md');
-    if (fs.existsSync(idPath)) {
-      const m = fs.readFileSync(idPath, 'utf8').match(/^-\s*[Nn]ame:\s*(.+)$/m);
-      if (m) return m[1].trim();
-    }
-  } catch (_) {}
-  // 次优先级：从路径特征推断（WorkBuddy 和 QClaw 的目录名不同）
+
+  // 3. 兜底：从 cwd 推断（仅用于已有 AI home 目录的机器）
+  const ws = process.cwd();
+  const detected = detectAgentNameFromPathStrict(ws);
+  if (detected !== 'unknown') {
+    return path.join(home, '.ai-memory-sync-' + detected.toLowerCase());
+  }
+
+  // 4. 最终兜底：使用旧共享目录（兼容未迁移的旧配置）
+  return path.join(home, '.ai-memory-sync');
+}
+
+/**
+ * 严格模式：仅从明确的 AI home 目录路径推断身份
+ * 不会沿路径向上搜索 IDENTITY.md，避免检测到其他 AI 的文件
+ */
+function detectAgentNameFromPathStrict(ws) {
+  // 仅匹配明确的 AI home 目录特征
   if (ws.includes('WorkBuddy') || ws.includes('.workbuddy')) return 'workbuddy';
   if (ws.includes('.qclaw') || ws.includes('QClaw')) return 'qclaw';
   if (ws.includes('.openclaw')) return 'openclaw';
@@ -409,10 +433,63 @@ function detectAgentName(workspaceDir) {
  * - 用户输入名字 vs IDENTITY.md 名字 vs agents.json 已有名字
  * - 优先级：IDENTITY.md（最权威） > agents.json（已有注册） > 用户输入
  * - 如果用户输入和已有 agent 不匹配 → 警告并使用最权威来源
+ *
+ * @param {string} userInputName 用户 --name 参数
+ * @param {string} workspaceDir 初始工作区目录（可能是 cwd，不一定包含 IDENTITY.md）
  */
 function resolveAgentIdentity(userInputName, workspaceDir) {
-  const detected = detectAgentName(workspaceDir);
-  const agentsJson = loadAgentsJson(workspaceDir);
+  // 搜索范围：workspaceDir 本身 + 所有已知 AI home 目录
+  const allSearchDirs = [
+    workspaceDir,
+    path.join(os.homedir(), '.workbuddy'),
+    path.join(os.homedir(), '.qclaw'),
+    path.join(os.homedir(), '.openclaw'),
+    path.join(os.homedir(), '.claude'),
+  ];
+
+  // 去重
+  const uniqueDirs = [...new Set(allSearchDirs.filter(d => fs.existsSync(d)))];
+
+  // 如果用户提供了 --name，优先在匹配该名称的目录中搜索 IDENTITY.md
+  // 避免在同一台机器上找到其他 AI 的 IDENTITY.md
+  let detected = null;
+  if (userInputName) {
+    const inputLower = userInputName.toLowerCase();
+    // 优先搜索目录名包含用户输入名称的目录
+    const priorityDirs = uniqueDirs.filter(d => d.toLowerCase().includes(inputLower));
+    const otherDirs = uniqueDirs.filter(d => !d.toLowerCase().includes(inputLower));
+
+    for (const dir of [...priorityDirs, ...otherDirs]) {
+      const name = detectAgentName(dir);
+      if (name) {
+        // 验证检测到的名字跟用户输入匹配（忽略大小写）
+        if (name.toLowerCase() === inputLower) {
+          detected = name;
+          break;
+        }
+        // 目录名匹配但 IDENTITY.md 中的名字不同 → 记录但不采用
+      }
+    }
+  } else {
+    // 没有 --name 参数时，按原始顺序搜索
+    for (const dir of uniqueDirs) {
+      detected = detectAgentName(dir);
+      if (detected) break;
+    }
+  }
+
+  // 对于 agents.json，也尝试从 workspaceDir 或 home 下已知的仓库位置加载
+  let agentsJson = null;
+  const repoCandidates = [
+    workspaceDir,
+    path.join(os.homedir(), '.qclaw', 'workspace'),
+    path.join(os.homedir(), '.workbuddy', 'workspace'),
+  ];
+  for (const rc of repoCandidates) {
+    agentsJson = loadAgentsJson(rc);
+    if (agentsJson) break;
+  }
+
   const existingNames = agentsJson && agentsJson.agents
     ? agentsJson.agents.map(a => a.name)
     : [];
@@ -510,6 +587,10 @@ function cmdInit() {
     }
     const aiName = identity.resolved;
 
+    // 立即设置配置目录覆盖，阻断后续 getConfigDir() 的循环调用
+    const resolvedConfigDir = path.join(os.homedir(), '.ai-memory-sync-' + aiName.toLowerCase());
+    setConfigDirOverride(resolvedConfigDir);
+
     if (!token || !password) {
       log('非交互模式缺少必要参数: --token/--token-file, --password/--password-file', 'ERROR');
       process.exit(1);
@@ -538,6 +619,10 @@ function cmdInit() {
         process.exit(1);
       }
       const aiName = identity.resolved;
+
+      // 立即设置配置目录覆盖，阻断后续 getConfigDir() 的循环调用
+      const resolvedConfigDir = path.join(os.homedir(), '.ai-memory-sync-' + aiName.toLowerCase());
+      setConfigDirOverride(resolvedConfigDir);
 
       if (!token || !password) {
         log('Token、密码必须填写', 'ERROR');
@@ -605,6 +690,25 @@ function ensureGitignore(repoDir, content) {
   }
 }
 function doInit(repoUrl, token, password, aiName, workspaceDir) {
+  // 智能修正 workspaceDir：如果 cwd 是 skill 仓库或其他无关目录，
+  // 根据 aiName 自动查找正确的 workspace 目录
+  if (!detectAgentNameFromPathStrict(workspaceDir).includes(aiName.toLowerCase())) {
+    const knownWorkspaces = [
+      // WorkBuddy 的常见 workspace 路径
+      path.join(os.homedir(), '.workbuddy', 'workspace'),
+      path.join(os.homedir(), '.qclaw', 'workspace'),
+      // 也搜索 home 下的其他位置
+      path.join(os.homedir(), 'Documents', 'GitHub', 'toclaw-memory'),
+    ];
+    for (const ws of knownWorkspaces) {
+      if (fs.existsSync(ws) && fs.existsSync(path.join(ws, 'agents'))) {
+        log('检测到已有仓库: ' + ws + '（自动替代 cwd）');
+        workspaceDir = ws;
+        break;
+      }
+    }
+  }
+
   // 保存 token 到文件（不明文存入配置）
   fs.writeFileSync(getTokenFile(), token, 'utf-8');
   try { fs.chmodSync(getTokenFile(), 0o600); } catch (_) {}
@@ -614,8 +718,8 @@ function doInit(repoUrl, token, password, aiName, workspaceDir) {
   fs.writeFileSync(getPasswordFile(), password, 'utf-8');
   try { fs.chmodSync(getPasswordFile(), 0o600); } catch (_) {}
 
-  // v3.0: 检测平台
-  const platform = detectPlatform();
+  // v3.0: 检测平台（v3.1.3: 优先用已知 aiName 推断，避免多平台共存时误判）
+  const platform = aiName === 'workbuddy' ? 'workbuddy' : detectPlatform();
 
   // v3.0: 检测本地文件路径
   const detectedPaths = detectLocalPaths(workspaceDir, platform);
@@ -762,6 +866,14 @@ function getPlatformEmoji(platform) {
 }
 
 /** 自动检测本地文件路径 */
+/** v3.1.3: 智能解析源路径（绝对路径直接返回，相对路径拼接 workspaceDir） */
+function resolveSrcPath(baseDir, relativeOrAbsolute) {
+  if (!relativeOrAbsolute) return null;
+  // path.isAbsolute 对 Windows C:\ 和 Linux / 都能正确判断
+  if (path.isAbsolute(relativeOrAbsolute)) return relativeOrAbsolute;
+  return path.join(baseDir, relativeOrAbsolute);
+}
+
 function detectLocalPaths(workspaceDir, platform) {
   const home = os.homedir();
   const result = { soul_files: [], identity_file: null, user_file: null, memory_path: '', daily_path: '', inject_identity: '', inject_user: '' };
@@ -776,15 +888,18 @@ function detectLocalPaths(workspaceDir, platform) {
       break;
     }
     case 'workbuddy': {
-      const memDir = path.join(workspaceDir, '.workbuddy', 'memory');
-      result.memory_path = '.workbuddy/memory/MEMORY.md';
-      result.daily_path = '.workbuddy/memory/';
-      result.inject_identity = path.join(home, '.workbuddy', 'SOUL.md');
-      result.inject_user = path.join(home, '.workbuddy', 'USER.md');
+      // v3.1.3: WorkBuddy 的数据目录是 ~/.workbuddy/，与仓库目录(workspaceDir)解耦
+      // 使用绝对路径，这样即使 workspaceDir 指向共享仓库（如 .qclaw/workspace）也能正确定位
+      const wbHome = path.join(home, '.workbuddy');
+      const memDir = path.join(wbHome, 'memory');
+      result.memory_path = path.join(wbHome, 'memory', 'MEMORY.md');
+      result.daily_path = path.join(wbHome, 'memory', '') + path.sep;
+      result.inject_identity = path.join(wbHome, 'SOUL.md');
+      result.inject_user = path.join(wbHome, 'USER.md');
       result.soul_files = ['MEMORY.md'];
-      // 检测是否有 IDENTITY.md / USER.md
-      if (fs.existsSync(path.join(workspaceDir, 'IDENTITY.md'))) result.identity_file = 'IDENTITY.md';
-      if (fs.existsSync(path.join(workspaceDir, 'USER.md'))) result.user_file = 'USER.md';
+      // 检测是否有 IDENTITY.md / USER.md（在 .workbuddy 根目录下）
+      if (fs.existsSync(path.join(wbHome, 'IDENTITY.md'))) result.identity_file = path.join(wbHome, 'IDENTITY.md');
+      if (fs.existsSync(path.join(wbHome, 'USER.md'))) result.user_file = path.join(wbHome, 'USER.md');
       break;
     }
     case 'qclaw': {
@@ -1403,7 +1518,7 @@ async function cmdPush() {
 
     // MEMORY.md
     if (localPaths.memory_path) {
-      const srcMemory = path.join(workspaceDir, localPaths.memory_path);
+      const srcMemory = resolveSrcPath(workspaceDir, localPaths.memory_path);
       const destMemory = path.join(repoAgentDir, 'MEMORY.md');
       if (fs.existsSync(srcMemory)) {
         fs.copyFileSync(srcMemory, destMemory);
@@ -1415,7 +1530,7 @@ async function cmdPush() {
 
     // Daily logs
     if (localPaths.daily_path) {
-      const srcDaily = path.join(workspaceDir, localPaths.daily_path);
+      const srcDaily = resolveSrcPath(workspaceDir, localPaths.daily_path);
       const destDaily = path.join(repoAgentDir, 'daily/');
       if (fs.existsSync(srcDaily)) {
         fs.mkdirSync(destDaily, { recursive: true });
